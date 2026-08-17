@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Smart Seller
 // @namespace    Nuntius [4448332]
-// @version      2.1.1
+// @version      2.1.2
 // @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
 // @author       Nael
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -134,7 +134,7 @@
             #tss-status.error { color: #ffb3b3; }
             .tss-stats {
                 display: grid;
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(2, 1fr);
                 gap: 5px;
                 margin-bottom: 9px;
             }
@@ -289,6 +289,26 @@
                     grid-template-columns: 1fr;
                 }
             }
+            .tss-footer {
+                margin-top: 11px;
+                padding-top: 9px;
+                border-top: 1px solid #444;
+                text-align: center;
+                color: #aaa;
+                font-size: 10px;
+                line-height: 1.5;
+            }
+            .tss-footer strong {
+                color: #ddd;
+            }
+            .tss-footer a {
+                color: #8ab4f8;
+                text-decoration: none;
+            }
+            .tss-footer a:hover {
+                text-decoration: underline;
+            }
+
             .tss-item-select {
                 flex: 0 0 auto;
                 width: 104px;
@@ -328,13 +348,7 @@
         document.head.appendChild(style);
     }
 
-    function setStatus(text, type = '') {
-        if (!panel) return;
-        const box = panel.querySelector('#tss-status');
-        box.textContent = text;
-        box.className = type ? type : '';
-        box.id = 'tss-status';
-    }
+    function setStatus() {}
 
     function createPanel() {
         if (panel?.isConnected) return;
@@ -348,10 +362,8 @@
                 <button type="button" id="tss-collapse">${panel.classList.contains('tss-collapsed') ? '+' : '−'}</button>
             </div>
             <div class="tss-body">
-                <div id="tss-status">Ready.</div>
                 <div class="tss-stats">
                     <div class="tss-stat"><strong id="tss-known">0</strong>saved</div>
-                    <div class="tss-stat"><strong id="tss-seen">0</strong>seen</div>
                     <div class="tss-stat"><strong id="tss-new">0</strong>new</div>
                 </div>
                 <div class="tss-row">
@@ -383,6 +395,11 @@
                         <button type="button" id="tss-import">Import all</button>
                     </div>
                     <div class="tss-note">Export includes all item rules and settings. Import replaces the current local data.</div>
+                </div>
+
+                <div class="tss-footer">
+                    <div><strong>Created by: <a href="https://www.torn.com/profiles.php?XID=4448332" target="_blank" rel="noopener noreferrer">Nuntius [4448332]</a></strong></div>
+                    <div>If you're enjoying it, feel free to <a href="https://www.torn.com/trade.php#step=start&userID=295516" target="_blank" rel="noopener noreferrer">give me a tip</a></div>
                 </div>
             </div>
         `;
@@ -540,7 +557,6 @@
             .sort((a, b) => a.name.localeCompare(b.name));
 
         panel.querySelector('#tss-known').textContent = Object.keys(state.items).length;
-        panel.querySelector('#tss-seen').textContent = seenThisSession.size;
         panel.querySelector('#tss-new').textContent = unclassified.length;
 
         const section = panel.querySelector('#tss-unclassified-section');
