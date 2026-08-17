@@ -1,0 +1,213 @@
+Sure. ♥ Here’s the updated full forum post, now written for a Greasy Fork release and including the current features of the script.
+
+
+---
+
+Torn Smart Seller – Item Market Helper
+
+Hey everyone!
+
+I’m not sure if something similar already exists, but I wanted to share a small userscript I made because it has been making Item Market listings much easier for me.
+
+I tend to sell a lot of the same items, and I got tired of constantly deciding how many to sell, what to keep, and re-entering prices every time.
+
+So I made Torn Smart Seller to remember those decisions and automatically prepare the Item Market listing page for me.
+
+It does not submit listings automatically. It only prepares the quantities and prices, so you can still review everything before pressing Torn’s final Add to market button.
+
+What does it do?
+
+Every item can be assigned one of three rules:
+
+Sell all
+Automatically enters your entire available quantity.
+
+Keep 1
+Automatically sells everything except one copy.
+
+Never sell
+Leaves the item out of the sale.
+
+Once you classify an item, Smart Seller remembers your choice locally.
+
+The next time that item appears on the Add Listing page, the script already knows what to do with it.
+
+Unclassified Items
+
+When Smart Seller finds an item it has never seen before, it marks it as Unclassified.
+
+The selector gets a small glow so new items are easy to notice.
+
+You also don’t have to search through your entire inventory to find them.
+
+If there are any unclassified items, Smart Seller automatically expands its panel and shows an Unclassified Items section containing:
+
+Item icon
+
+Item name
+
+Available quantity
+
+Category selector
+
+
+You can classify them directly from the Smart Seller panel.
+
+Once classified, they disappear from the Unclassified section automatically.
+
+Automatic Pricing
+
+Smart Seller can automatically calculate prices using Torn’s displayed RRP.
+
+You simply choose a percentage adjustment.
+
+For example:
+
+5 → RRP + 5%
+-5 → RRP - 5%
+0 → exact RRP
+
+So if an item has an RRP of $10,000 and your adjustment is set to 5, Smart Seller will enter:
+
+$10,500
+
+No Torn API key is required.
+
+Fixed Prices
+
+You can also assign a Fixed Price to individual items.
+
+A fixed price always takes priority over the normal RRP percentage calculation.
+
+For example, if you always want to sell a certain item for exactly $25,000, simply enter:
+
+25000
+
+Smart Seller will then always use that price for that item.
+
+If you remove the fixed price and leave the field blank, the item goes back to using your normal RRP adjustment.
+
+Fixed prices can be edited directly from the Item Market list.
+
+Saved Items Manager
+
+Clicking Saved at the top of the Smart Seller panel opens a larger management view.
+
+This gives you an easy way to manage everything Smart Seller already knows.
+
+It displays:
+
+Name | Category | Fixed Price
+
+There is also a search bar, which is especially useful once you have a lot of saved items.
+
+From this screen you can directly change:
+
+Sell all
+
+Keep 1
+
+Never sell
+
+Fixed prices
+
+
+So you don’t need to wait for an item to appear in your inventory just to edit its settings.
+
+Auto-Prepare
+
+By default, Smart Seller automatically prepares known items when you open the Add Listing page.
+
+That means it fills in the appropriate quantity and price based on your saved settings.
+
+If you prefer, you can disable Auto-prepare known items and use the Apply now button manually instead.
+
+Import / Export
+
+Everything is stored locally through Tampermonkey.
+
+Smart Seller does not upload your item settings to an external server.
+
+The panel includes Export All and Import All, allowing you to back up or move your configuration to another browser or computer.
+
+The exported data includes things such as:
+
+Item classifications
+
+Fixed prices
+
+RRP percentage adjustment
+
+Auto-prepare setting
+
+Smart Seller settings
+
+
+Just export the JSON, save it somewhere, and import it on the other device.
+
+Installation
+
+Smart Seller is available on Greasy Fork.
+
+You will need a userscript manager such as Tampermonkey installed in your browser.
+
+Installation is simple:
+
+1. Install Tampermonkey if you don’t already have it.
+
+
+2. Open the Torn Smart Seller page on Greasy Fork.
+
+
+3. Click Install this script.
+
+
+4. Tampermonkey will open the userscript installation page.
+
+
+5. Click Install.
+
+
+6. Go to Torn → Item Market → Add Listing.
+
+
+
+Smart Seller should appear automatically.
+
+Installing it through Greasy Fork also makes updating to newer versions much easier through Tampermonkey.
+
+How I use it
+
+My workflow is basically:
+
+The first time I see an item, I decide:
+
+Sell everything?
+Keep one?
+Never sell it?
+
+After that, I generally don’t need to think about that item again.
+
+Whenever I open Add Listing, Smart Seller automatically fills in the quantities and prices I normally use.
+
+I just review everything and submit the listing myself.
+
+That was really the main reason I made it: less repetitive clicking and typing when selling inventory.
+
+I don’t know if there is already another script doing something similar or even something better, but this one has been making my life easier, so I figured I might as well share it in case someone else finds it useful too.
+
+
+---
+
+Created by: Nuntius [4448332]
+
+If you're enjoying it, feel free to give me a tip. ❤️
+
+Install from Greasy Fork
+
+[INSERT GREASY FORK LINK HERE]
+
+
+---
+
+Si quieres, también te puedo preparar una versión específicamente formateada para el BBCode del foro de Torn, con [b], [url], [color], [size], etc., para que solo tengas que copiarla y pegarla.
