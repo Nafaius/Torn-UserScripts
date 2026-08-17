@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Smart Seller
 // @namespace    Nuntius [4448332]
-// @version      2.0.3
+// @version      2.1.0
 // @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
 // @author       Nael
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -48,11 +48,7 @@
     let routeWatcher = null;
     let active = false;
     let scanScheduled = false;
-    let initialPriorityApplied = false;
-    let initialPriorityTimer = null;
-    let initialPriorityAttempts = 0;
     const seenThisSession = new Map();
-    const naturalSlotTransforms = new Map();
 
     function saveState() {
         GM_setValue(STORAGE.state, state);
@@ -202,6 +198,82 @@
                 font-size: 10px;
                 line-height: 1.35;
             }
+            .tss-unclassified-section {
+                margin-top: 10px;
+                padding-top: 9px;
+                border-top: 1px solid #444;
+            }
+            .tss-unclassified-title {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                margin-bottom: 6px;
+                font-weight: bold;
+                color: #ffe082;
+            }
+            .tss-unclassified-count {
+                min-width: 20px;
+                padding: 1px 6px;
+                text-align: center;
+                color: #111;
+                background: #ffd54f;
+                border-radius: 10px;
+                font-size: 10px;
+            }
+            .tss-unclassified-list {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }
+            .tss-unclassified-card {
+                display: grid;
+                grid-template-columns: 38px minmax(0, 1fr);
+                gap: 7px;
+                align-items: center;
+                padding: 6px;
+                background: #272727;
+                border: 1px solid #4d4d4d;
+                border-radius: 6px;
+            }
+            .tss-unclassified-card img {
+                width: 36px;
+                height: 36px;
+                object-fit: contain;
+                display: block;
+            }
+            .tss-unclassified-info {
+                min-width: 0;
+            }
+            .tss-unclassified-name {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-weight: bold;
+                color: #f2f2f2;
+            }
+            .tss-unclassified-meta {
+                margin-top: 1px;
+                color: #aaa;
+                font-size: 10px;
+            }
+            .tss-unclassified-card select {
+                box-sizing: border-box;
+                width: 100%;
+                height: 27px;
+                margin-top: 5px;
+                padding: 2px 5px;
+                cursor: pointer;
+                color: #f2f2f2 !important;
+                background: #292929 !important;
+                border: 1px solid #c49000 !important;
+                border-radius: 5px;
+                color-scheme: dark;
+            }
+            .tss-unclassified-card select option {
+                color: #f2f2f2 !important;
+                background: #242424 !important;
+            }
             .tss-item-select {
                 flex: 0 0 auto;
                 width: 104px;
@@ -279,6 +351,15 @@
                 <div class="tss-actions">
                     <button type="button" id="tss-apply">Apply now</button>
                 </div>
+
+                <div id="tss-unclassified-section" class="tss-unclassified-section" hidden>
+                    <div class="tss-unclassified-title">
+                        <span>Unclassified items</span>
+                        <span id="tss-unclassified-count" class="tss-unclassified-count">0</span>
+                    </div>
+                    <div id="tss-unclassified-list" class="tss-unclassified-list"></div>
+                </div>
+
                 <div class="tss-section">
                     <div class="tss-section-title">Import / Export</div>
                     <textarea id="tss-data" placeholder="Exported data or data to import"></textarea>
@@ -403,12 +484,104 @@
         panel = null;
     }
 
+    function expandPanelForUnclassified() {
+        if (!panel) return;
+
+        if (panel.classList.contains('tss-collapsed')) {
+            panel.classList.remove('tss-collapsed');
+            GM_setValue(STORAGE.collapsed, false);
+
+            const collapseButton = panel.querySelector('#tss-collapse');
+            if (collapseButton) collapseButton.textContent = '−';
+        }
+    }
+
+    function createRuleOptions(select, includeUnclassified = true) {
+        const options = [];
+
+        if (includeUnclassified) {
+            options.push(['', 'Unclassified']);
+        }
+
+        options.push(
+            ['SELL_ALL', 'Sell all'],
+            ['KEEP_ONE', 'Keep 1'],
+            ['NEVER_SELL', 'Never sell']
+        );
+
+        for (const [value, label] of options) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            select.appendChild(option);
+        }
+    }
+
     function refreshPanel() {
         if (!panel) return;
-        const unclassified = [...seenThisSession.values()].filter(item => !state.items[item.id]?.rule);
+
+        const unclassified = [...seenThisSession.values()]
+            .filter(item => !state.items[item.id]?.rule)
+            .sort((a, b) => a.name.localeCompare(b.name));
+
         panel.querySelector('#tss-known').textContent = Object.keys(state.items).length;
         panel.querySelector('#tss-seen').textContent = seenThisSession.size;
         panel.querySelector('#tss-new').textContent = unclassified.length;
+
+        const section = panel.querySelector('#tss-unclassified-section');
+        const count = panel.querySelector('#tss-unclassified-count');
+        const list = panel.querySelector('#tss-unclassified-list');
+
+        count.textContent = unclassified.length;
+        list.innerHTML = '';
+
+        if (!unclassified.length) {
+            section.hidden = true;
+            return;
+        }
+
+        section.hidden = false;
+        expandPanelForUnclassified();
+
+        for (const item of unclassified) {
+            const card = document.createElement('div');
+            card.className = 'tss-unclassified-card';
+
+            const image = document.createElement('img');
+            image.src = item.imageSrc || '';
+            image.alt = item.name;
+            image.loading = 'lazy';
+
+            const info = document.createElement('div');
+            info.className = 'tss-unclassified-info';
+
+            const name = document.createElement('div');
+            name.className = 'tss-unclassified-name';
+            name.textContent = item.name;
+            name.title = item.name;
+
+            const meta = document.createElement('div');
+            meta.className = 'tss-unclassified-meta';
+            meta.textContent = `Available: ${item.available}`;
+
+            const select = document.createElement('select');
+            select.setAttribute('aria-label', `Classify ${item.name}`);
+            createRuleOptions(select, true);
+            select.value = '';
+
+            select.addEventListener('change', event => {
+                event.stopPropagation();
+
+                const rule = event.target.value;
+                if (!rule) return;
+
+                setItemRule(item, rule);
+            });
+
+            info.append(name, meta, select);
+            card.append(image, info);
+            list.appendChild(card);
+        }
     }
 
     function readVisibleItems() {
@@ -435,6 +608,7 @@
             items.push({
                 id: String(idMatch[1]),
                 name: image?.getAttribute('alt')?.trim() || `Item ${idMatch[1]}`,
+                imageSrc,
                 available,
                 row,
                 infoButton: button
@@ -566,17 +740,7 @@
             select = document.createElement('select');
             select.className = 'tss-item-select';
             select.dataset.itemId = item.id;
-            for (const [value, label] of [
-                ['', 'Unclassified'],
-                ['SELL_ALL', 'Sell all'],
-                ['KEEP_ONE', 'Keep 1'],
-                ['NEVER_SELL', 'Never sell']
-            ]) {
-                const option = document.createElement('option');
-                option.value = value;
-                option.textContent = label;
-                select.appendChild(option);
-            }
+            createRuleOptions(select, true);
             select.addEventListener('click', event => event.stopPropagation());
             select.addEventListener('change', event => {
                 event.stopPropagation();
@@ -596,88 +760,6 @@
         select.title = rule ? RULES[rule].label : 'Choose how this item should be handled';
     }
 
-    function applyInitialPriorityOrder(items) {
-        if (initialPriorityApplied || items.length < 2) return false;
-
-        const entries = [];
-
-        for (const item of items) {
-            const wrapper = item.row.closest('[data-index]');
-            if (!wrapper) continue;
-
-            const index = Number(wrapper.dataset.index);
-            if (!Number.isFinite(index)) continue;
-
-            if (!naturalSlotTransforms.has(index)) {
-                naturalSlotTransforms.set(
-                    index,
-                    wrapper.style.transform || `translateY(${index * 34}px)`
-                );
-            }
-
-            entries.push({
-                wrapper,
-                index,
-                unclassified: !state.items[item.id]?.rule
-            });
-        }
-
-        if (entries.length < 2) return false;
-
-        const slots = entries
-            .map(entry => ({
-                index: entry.index,
-                transform: naturalSlotTransforms.get(entry.index)
-            }))
-            .sort((a, b) => a.index - b.index);
-
-        const ordered = [...entries].sort((a, b) => {
-            if (a.unclassified !== b.unclassified) {
-                return a.unclassified ? -1 : 1;
-            }
-            return a.index - b.index;
-        });
-
-        ordered.forEach((entry, position) => {
-            const target = slots[position];
-            if (!target?.transform) return;
-
-            // ONE-TIME write. Smart Seller never writes wrapper transforms again
-            // during this page visit. Torn is free to manage them afterward.
-            entry.wrapper.style.transform = target.transform;
-            entry.wrapper.style.zIndex = entry.unclassified ? '3' : '';
-        });
-
-        initialPriorityApplied = true;
-        return true;
-    }
-
-    function scheduleInitialPriorityOrder() {
-        if (initialPriorityApplied || initialPriorityTimer) return;
-
-        initialPriorityTimer = setTimeout(() => {
-            initialPriorityTimer = null;
-
-            if (!active || !isAddListingPage() || initialPriorityApplied) {
-                return;
-            }
-
-            const items = readVisibleItems();
-
-            if (applyInitialPriorityOrder(items)) {
-                return;
-            }
-
-            // Torn may still be rendering the virtualized list. Retry a few
-            // times, but once an order is applied it is never applied again.
-            initialPriorityAttempts += 1;
-
-            if (initialPriorityAttempts < 6) {
-                scheduleInitialPriorityOrder();
-            }
-        }, 450);
-    }
-
     function scanAndPrepare(force = false) {
         if (!active || !isAddListingPage()) return;
         const items = readVisibleItems();
@@ -686,13 +768,13 @@
             seenThisSession.set(item.id, {
                 id: item.id,
                 name: item.name,
+                imageSrc: item.imageSrc,
                 available: item.available
             });
             decorateItemRow(item);
             if (force || getAutoPrepare()) applyRule(item);
         }
 
-        scheduleInitialPriorityOrder();
         refreshPanel();
     }
 
@@ -708,16 +790,7 @@
     function startPageMode() {
         if (active) return;
         active = true;
-        initialPriorityApplied = false;
-        initialPriorityAttempts = 0;
-
-        if (initialPriorityTimer) {
-            clearTimeout(initialPriorityTimer);
-            initialPriorityTimer = null;
-        }
-
         seenThisSession.clear();
-        naturalSlotTransforms.clear();
         createPanel();
         observer = new MutationObserver(mutations => {
             const relevant = mutations.some(mutation => {
@@ -751,15 +824,7 @@
         active = false;
         observer?.disconnect();
         observer = null;
-        if (initialPriorityTimer) {
-            clearTimeout(initialPriorityTimer);
-            initialPriorityTimer = null;
-        }
-
-        initialPriorityApplied = false;
-        initialPriorityAttempts = 0;
         seenThisSession.clear();
-        naturalSlotTransforms.clear();
         removePanel();
     }
 
