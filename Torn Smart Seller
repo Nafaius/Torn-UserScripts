@@ -3,7 +3,7 @@
 // @namespace    Nuntius [4448332]
 // @version      2.2.2
 // @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
-// @author       Nael
+// @author       Nuntius & Goro
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
 // @grant        GM_getValue
 // @grant        GM_setValue
