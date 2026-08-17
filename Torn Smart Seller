@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Torn Smart Seller
 // @namespace    Nuntius [4448332]
-// @version      2.2.1
+// @version      2.2.2
 // @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
-// @author       Nuntius & Goro
+// @author       Nael
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -49,6 +49,7 @@
     let active = false;
     let scanScheduled = false;
     let lastUnclassifiedSignature = '';
+    let initialUnclassifiedExpandHandled = false;
     const seenThisSession = new Map();
 
     function saveState() {
@@ -763,12 +764,10 @@
 
     function expandPanelForUnclassified() {
         if (!panel) return;
-
         if (panel.classList.contains('tss-saved-mode')) return;
 
         if (panel.classList.contains('tss-collapsed')) {
             panel.classList.remove('tss-collapsed');
-            GM_setValue(STORAGE.collapsed, false);
 
             const collapseButton = panel.querySelector('#tss-collapse');
             if (collapseButton) collapseButton.textContent = '−';
@@ -816,11 +815,20 @@
             section.hidden = true;
             lastUnclassifiedSignature = '';
             if (list.children.length) list.replaceChildren();
+
+            if (seenThisSession.size > 0 && !initialUnclassifiedExpandHandled) {
+                initialUnclassifiedExpandHandled = true;
+            }
+
             return;
         }
 
         section.hidden = false;
-        expandPanelForUnclassified();
+
+        if (!initialUnclassifiedExpandHandled) {
+            initialUnclassifiedExpandHandled = true;
+            expandPanelForUnclassified();
+        }
 
         // Do NOT rebuild the cards unless the actual pending-item data changed.
         // Recreating <select> elements during normal Torn DOM updates caused
@@ -1270,6 +1278,7 @@
         if (active) return;
         active = true;
         lastUnclassifiedSignature = '';
+        initialUnclassifiedExpandHandled = false;
         seenThisSession.clear();
         createPanel();
         observer = new MutationObserver(mutations => {
@@ -1305,6 +1314,7 @@
         observer?.disconnect();
         observer = null;
         lastUnclassifiedSignature = '';
+        initialUnclassifiedExpandHandled = false;
         seenThisSession.clear();
         removePanel();
     }
