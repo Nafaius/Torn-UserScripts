@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Smart Seller
-// @namespace    nael.torn.smart-seller
+// @namespace    Nuntius [4448332]
 // @version      2.0.1
 // @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
 // @author       Nael
