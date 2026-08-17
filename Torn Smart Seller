@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Smart Seller
 // @namespace    Nuntius [4448332]
-// @version      2.0.1
+// @version      2.0.2
 // @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
 // @author       Nael
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -48,6 +48,8 @@
     let routeWatcher = null;
     let active = false;
     let scanScheduled = false;
+    let prioritySuspended = false;
+    let priorityResumeTimer = null;
     const seenThisSession = new Map();
     const naturalSlotTransforms = new Map();
 
@@ -434,19 +436,44 @@
         return items;
     }
 
+    function normalizeMoneyValue(value) {
+        const text = String(value ?? '').trim();
+        if (!text) return '';
+        const normalized = text.replace(/[$,\s]/g, '');
+        const number = Number(normalized);
+        return Number.isFinite(number) ? String(number) : normalized;
+    }
+
     function setReactInputValue(input, value) {
-        if (!input) return;
+        if (!input) return false;
+
         const text = value === '' || value === null ? '' : String(value);
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        const hidden = input.parentElement?.querySelector(
+            `input[placeholder="${input.placeholder}"][type="hidden"]`
+        );
+
+        const currentVisible = normalizeMoneyValue(input.value);
+        const currentHidden = hidden ? normalizeMoneyValue(hidden.value) : currentVisible;
+        const desired = normalizeMoneyValue(text);
+
+        if (currentVisible === desired && currentHidden === desired) {
+            return false;
+        }
+
+        const setter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            'value'
+        )?.set;
+
         if (setter) setter.call(input, text);
         else input.value = text;
 
-        const hidden = input.parentElement?.querySelector(`input[placeholder="${input.placeholder}"][type="hidden"]`);
         if (hidden) hidden.value = text;
 
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
         input.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
     }
 
     function findQuantityInput(row) {
@@ -521,6 +548,26 @@
     }
 
     function decorateItemRow(item) {
+        if (!item.infoButton.dataset.tssInfoSafe) {
+            item.infoButton.dataset.tssInfoSafe = '1';
+
+            const suspendBeforeOpen = () => {
+                suspendPriorityOrder();
+            };
+
+            item.infoButton.addEventListener(
+                'pointerdown',
+                suspendBeforeOpen,
+                true
+            );
+
+            item.infoButton.addEventListener(
+                'mousedown',
+                suspendBeforeOpen,
+                true
+            );
+        }
+
         let select = item.row.querySelector('.tss-item-select');
         if (select && select.dataset.itemId !== item.id) {
             select.remove();
@@ -560,7 +607,84 @@
         select.title = rule ? RULES[rule].label : 'Choose how this item should be handled';
     }
 
+    function getInfoButtons() {
+        return document.querySelectorAll(
+            '#item-market-root button[aria-controls^="wai-inventoryManager-itemInfo-"]'
+        );
+    }
+
+    function isAnyItemInfoOpen() {
+        for (const button of getInfoButtons()) {
+            if (button.getAttribute('aria-expanded') === 'true') {
+                return true;
+            }
+
+            const controlledId = button.getAttribute('aria-controls');
+            if (!controlledId) continue;
+
+            const infoPanel = document.getElementById(controlledId);
+            if (
+                infoPanel &&
+                infoPanel.getClientRects().length > 0 &&
+                infoPanel.getBoundingClientRect().height > 0
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function restoreNaturalRowOrder(items = readVisibleItems()) {
+        for (const item of items) {
+            const wrapper = item.row.closest('[data-index]');
+            if (!wrapper) continue;
+
+            const index = Number(wrapper.dataset.index);
+            if (!Number.isFinite(index)) continue;
+
+            const naturalTransform = naturalSlotTransforms.get(index);
+            if (naturalTransform) {
+                wrapper.style.transform = naturalTransform;
+            }
+
+            wrapper.style.zIndex = '';
+        }
+    }
+
+    function suspendPriorityOrder() {
+        prioritySuspended = true;
+
+        if (priorityResumeTimer) {
+            clearTimeout(priorityResumeTimer);
+            priorityResumeTimer = null;
+        }
+
+        restoreNaturalRowOrder();
+    }
+
+    function schedulePriorityResume() {
+        if (priorityResumeTimer) {
+            clearTimeout(priorityResumeTimer);
+        }
+
+        priorityResumeTimer = setTimeout(() => {
+            priorityResumeTimer = null;
+
+            if (!active || isAnyItemInfoOpen()) {
+                return;
+            }
+
+            prioritySuspended = false;
+            scanAndPrepare();
+        }, 250);
+    }
+
     function prioritizeUnclassifiedRows(items) {
+        if (prioritySuspended || isAnyItemInfoOpen()) {
+            return;
+        }
+
         const entries = [];
 
         for (const item of items) {
@@ -612,7 +736,15 @@
             if (force || getAutoPrepare()) applyRule(item);
         }
 
-        prioritizeUnclassifiedRows(items);
+        if (isAnyItemInfoOpen()) {
+            prioritySuspended = true;
+            restoreNaturalRowOrder(items);
+        } else if (prioritySuspended) {
+            schedulePriorityResume();
+        } else {
+            prioritizeUnclassifiedRows(items);
+        }
+
         refreshPanel();
     }
 
@@ -644,6 +776,11 @@
         active = false;
         observer?.disconnect();
         observer = null;
+        if (priorityResumeTimer) {
+            clearTimeout(priorityResumeTimer);
+            priorityResumeTimer = null;
+        }
+        prioritySuspended = false;
         seenThisSession.clear();
         naturalSlotTransforms.clear();
         removePanel();
