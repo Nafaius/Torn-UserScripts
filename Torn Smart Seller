@@ -1,0 +1,671 @@
+// ==UserScript==
+// @name         Torn Smart Seller
+// @namespace    nael.torn.smart-seller
+// @version      2.0.1
+// @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
+// @author       Nael
+// @match        https://www.torn.com/page.php?sid=ItemMarket*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @run-at       document-idle
+// @license      MIT
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const STORAGE = {
+        state: 'tornSmartSeller_state',
+        autoPrepare: 'tornSmartSeller_autoPrepare',
+        collapsed: 'tornSmartSeller_collapsed',
+        pricePercent: 'tornSmartSeller_pricePercent'
+    };
+
+    const RULES = {
+        SELL_ALL: { label: 'Sell all', color: '#43a047' },
+        KEEP_ONE: { label: 'Keep 1', color: '#f9a825' },
+        NEVER_SELL: { label: 'Never sell', color: '#e53935' }
+    };
+
+
+    function emptyState() {
+        return { version: 1, items: {} };
+    }
+
+    function normalizeState(value) {
+        const result = value && typeof value === 'object' ? value : emptyState();
+        if (!result.items || typeof result.items !== 'object' || Array.isArray(result.items)) {
+            result.items = {};
+        }
+        result.version = 1;
+        return result;
+    }
+
+    let state = normalizeState(GM_getValue(STORAGE.state, emptyState()));
+    let panel = null;
+    let observer = null;
+    let routeWatcher = null;
+    let active = false;
+    let scanScheduled = false;
+    const seenThisSession = new Map();
+    const naturalSlotTransforms = new Map();
+
+    function saveState() {
+        GM_setValue(STORAGE.state, state);
+    }
+
+    function getAutoPrepare() {
+        return GM_getValue(STORAGE.autoPrepare, true) !== false;
+    }
+
+    function getPricePercent() {
+        const value = Number(GM_getValue(STORAGE.pricePercent, 5));
+        return Number.isFinite(value) ? value : 5;
+    }
+
+    function setPricePercent(value) {
+        GM_setValue(STORAGE.pricePercent, value);
+    }
+
+    function isAddListingPage() {
+        const params = new URLSearchParams(location.search);
+        return location.pathname.endsWith('/page.php') &&
+            params.get('sid') === 'ItemMarket' &&
+            location.hash.startsWith('#/addListing') &&
+            !location.hash.includes('/confirm');
+    }
+
+    function injectStyles() {
+        if (document.getElementById('tss-style')) return;
+        const style = document.createElement('style');
+        style.id = 'tss-style';
+        style.textContent = `
+            #tss-panel {
+                position: fixed;
+                right: 12px;
+                bottom: 72px;
+                z-index: 2147483000;
+                width: 320px;
+                max-height: 78vh;
+                overflow: hidden;
+                color: #eee;
+                background: #1c1c1c;
+                border: 1px solid #4a4a4a;
+                border-radius: 8px;
+                box-shadow: 0 8px 26px rgba(0,0,0,.48);
+                font: 12px Arial, Helvetica, sans-serif;
+            }
+            #tss-panel.tss-collapsed .tss-body { display: none; }
+            #tss-panel .tss-header {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 8px 9px;
+                background: linear-gradient(#363636, #262626);
+                border-bottom: 1px solid #444;
+                user-select: none;
+            }
+            #tss-panel .tss-title { flex: 1; font-weight: bold; }
+            #tss-panel button {
+                cursor: pointer;
+                color: #eee;
+                background: #343434;
+                border: 1px solid #555;
+                border-radius: 5px;
+            }
+            #tss-panel button:hover { filter: brightness(1.18); }
+            #tss-collapse { min-width: 27px; height: 25px; }
+            #tss-panel .tss-body {
+                max-height: calc(78vh - 42px);
+                overflow-y: auto;
+                padding: 9px;
+            }
+            #tss-status {
+                margin-bottom: 8px;
+                padding: 6px 7px;
+                line-height: 1.35;
+                color: #ccc;
+                background: #292929;
+                border-radius: 5px;
+            }
+            #tss-status.ok { color: #b9f6ca; }
+            #tss-status.warn { color: #ffe082; }
+            #tss-status.error { color: #ffb3b3; }
+            .tss-stats {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 5px;
+                margin-bottom: 9px;
+            }
+            .tss-stat {
+                padding: 5px 3px;
+                text-align: center;
+                background: #292929;
+                border-radius: 5px;
+            }
+            .tss-stat strong {
+                display: block;
+                font-size: 14px;
+                color: #fff;
+            }
+            .tss-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin: 7px 0;
+            }
+            .tss-row label { flex: 1; }
+            .tss-row input[type="text"] {
+                box-sizing: border-box;
+                width: 86px;
+                padding: 5px 6px;
+                color: #eee;
+                background: #111;
+                border: 1px solid #555;
+                border-radius: 4px;
+            }
+            .tss-actions {
+                display: flex;
+                gap: 5px;
+                margin: 8px 0;
+            }
+            .tss-actions button { flex: 1; padding: 6px 5px; }
+            .tss-section {
+                margin-top: 10px;
+                padding-top: 9px;
+                border-top: 1px solid #444;
+            }
+            .tss-section-title {
+                margin-bottom: 6px;
+                font-weight: bold;
+                color: #ddd;
+            }
+            #tss-data {
+                box-sizing: border-box;
+                width: 100%;
+                min-height: 82px;
+                resize: vertical;
+                padding: 6px;
+                color: #eee;
+                background: #111;
+                border: 1px solid #555;
+                border-radius: 4px;
+                font: 10px Consolas, monospace;
+            }
+            .tss-note {
+                margin-top: 4px;
+                color: #999;
+                font-size: 10px;
+                line-height: 1.35;
+            }
+            .tss-item-select {
+                flex: 0 0 auto;
+                width: 104px;
+                height: 25px;
+                margin: 0 5px;
+                padding: 2px 4px;
+                cursor: pointer;
+                color: #f2f2f2 !important;
+                background: #292929 !important;
+                border: 1px solid #555 !important;
+                border-radius: 5px;
+                font-size: 11px;
+                color-scheme: dark;
+            }
+            .tss-item-select option {
+                color: #f2f2f2 !important;
+                background: #242424 !important;
+            }
+            @keyframes tss-pulse {
+                0%, 100% { filter: brightness(1); background-color: rgba(255,193,7,0); }
+                50% { filter: brightness(1.18); background-color: rgba(255,193,7,.10); }
+            }
+            .tss-unclassified-row {
+                outline: none !important;
+                box-shadow: none !important;
+                animation: tss-pulse 1.35s ease-in-out infinite !important;
+            }
+            .tss-priority-wrapper { transition: transform 260ms ease !important; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function setStatus(text, type = '') {
+        if (!panel) return;
+        const box = panel.querySelector('#tss-status');
+        box.textContent = text;
+        box.className = type ? type : '';
+        box.id = 'tss-status';
+    }
+
+    function createPanel() {
+        if (panel?.isConnected) return;
+        injectStyles();
+        panel = document.createElement('div');
+        panel.id = 'tss-panel';
+        if (GM_getValue(STORAGE.collapsed, false)) panel.classList.add('tss-collapsed');
+        panel.innerHTML = `
+            <div class="tss-header">
+                <span class="tss-title">Smart Seller</span>
+                <button type="button" id="tss-collapse">${panel.classList.contains('tss-collapsed') ? '+' : '−'}</button>
+            </div>
+            <div class="tss-body">
+                <div id="tss-status">Ready.</div>
+                <div class="tss-stats">
+                    <div class="tss-stat"><strong id="tss-known">0</strong>saved</div>
+                    <div class="tss-stat"><strong id="tss-seen">0</strong>seen</div>
+                    <div class="tss-stat"><strong id="tss-new">0</strong>new</div>
+                </div>
+                <div class="tss-row">
+                    <label for="tss-auto">Auto-prepare known items</label>
+                    <input id="tss-auto" type="checkbox">
+                </div>
+                <div class="tss-row">
+                    <label for="tss-percent">RRP adjustment (%)</label>
+                    <input id="tss-percent" type="text" inputmode="decimal">
+                </div>
+                <div class="tss-note">Example: 5 = RRP +5%, -5 = RRP -5%, 0 = exact RRP.</div>
+                <div class="tss-actions">
+                    <button type="button" id="tss-apply">Apply now</button>
+                </div>
+                <div class="tss-section">
+                    <div class="tss-section-title">Import / Export</div>
+                    <textarea id="tss-data" placeholder="Exported data or data to import"></textarea>
+                    <div class="tss-actions">
+                        <button type="button" id="tss-export">Export all</button>
+                        <button type="button" id="tss-import">Import all</button>
+                    </div>
+                    <div class="tss-note">Export includes all item rules and settings. Import replaces the current local data.</div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(panel);
+
+        panel.querySelector('#tss-auto').checked = getAutoPrepare();
+        panel.querySelector('#tss-percent').value = getPricePercent();
+
+        panel.addEventListener('mousedown', event => event.stopPropagation());
+        panel.addEventListener('click', event => event.stopPropagation());
+
+        panel.querySelector('#tss-collapse').addEventListener('click', event => {
+            event.preventDefault();
+            const collapsed = panel.classList.toggle('tss-collapsed');
+            GM_setValue(STORAGE.collapsed, collapsed);
+            event.currentTarget.textContent = collapsed ? '+' : '−';
+        });
+
+        panel.querySelector('#tss-auto').addEventListener('change', event => {
+            GM_setValue(STORAGE.autoPrepare, !!event.target.checked);
+            scanAndPrepare();
+        });
+
+        panel.querySelector('#tss-percent').addEventListener('change', event => {
+            const value = Number(String(event.target.value).replace(',', '.'));
+            if (!Number.isFinite(value)) {
+                event.target.value = getPricePercent();
+                setStatus('Enter a valid percentage.', 'error');
+                return;
+            }
+            setPricePercent(value);
+            event.target.value = value;
+            scanAndPrepare(true);
+            setStatus(`Price adjustment set to ${value}%.`, 'ok');
+        });
+
+        panel.querySelector('#tss-apply').addEventListener('click', () => {
+            scanAndPrepare(true);
+            setStatus('Visible items prepared.', 'ok');
+        });
+
+        panel.querySelector('#tss-export').addEventListener('click', async () => {
+            const data = JSON.stringify({
+                format: 'Torn Smart Seller',
+                version: 1,
+                exportedAt: new Date().toISOString(),
+                settings: {
+                    autoPrepare: getAutoPrepare(),
+                    pricePercent: getPricePercent(),
+                    collapsed: panel.classList.contains('tss-collapsed')
+                },
+                items: state.items
+            }, null, 2);
+            const box = panel.querySelector('#tss-data');
+            box.value = data;
+            box.focus();
+            box.select();
+            try {
+                await navigator.clipboard.writeText(data);
+                setStatus('All data exported and copied to clipboard.', 'ok');
+            } catch {
+                setStatus('All data exported. Copy it from the text box.', 'ok');
+            }
+        });
+
+        panel.querySelector('#tss-import').addEventListener('click', () => {
+            const raw = panel.querySelector('#tss-data').value.trim();
+            if (!raw) {
+                setStatus('Paste exported data first.', 'warn');
+                return;
+            }
+            try {
+                const data = JSON.parse(raw);
+                if (!data || typeof data !== 'object' || !data.items || typeof data.items !== 'object') {
+                    throw new Error('Invalid data format');
+                }
+                const importedItems = {};
+                for (const [id, entry] of Object.entries(data.items)) {
+                    if (!entry || !RULES[entry.rule]) continue;
+                    importedItems[String(id)] = {
+                        name: String(entry.name || `Item ${id}`),
+                        rule: entry.rule,
+                        updatedAt: entry.updatedAt || new Date().toISOString()
+                    };
+                }
+                state = { version: 1, items: importedItems };
+                saveState();
+                if (data.settings && typeof data.settings === 'object') {
+                    if (typeof data.settings.autoPrepare === 'boolean') {
+                        GM_setValue(STORAGE.autoPrepare, data.settings.autoPrepare);
+                    }
+                    const pct = Number(data.settings.pricePercent);
+                    if (Number.isFinite(pct)) setPricePercent(pct);
+                    if (typeof data.settings.collapsed === 'boolean') {
+                        GM_setValue(STORAGE.collapsed, data.settings.collapsed);
+                        panel.classList.toggle('tss-collapsed', data.settings.collapsed);
+                        panel.querySelector('#tss-collapse').textContent = data.settings.collapsed ? '+' : '−';
+                    }
+                }
+                panel.querySelector('#tss-auto').checked = getAutoPrepare();
+                panel.querySelector('#tss-percent').value = getPricePercent();
+                scanAndPrepare(true);
+                setStatus(`Imported ${Object.keys(importedItems).length} item rules.`, 'ok');
+            } catch (error) {
+                setStatus(`Import failed: ${error.message}`, 'error');
+            }
+        });
+
+        refreshPanel();
+    }
+
+    function removePanel() {
+        panel?.remove();
+        panel = null;
+    }
+
+    function refreshPanel() {
+        if (!panel) return;
+        const unclassified = [...seenThisSession.values()].filter(item => !state.items[item.id]?.rule);
+        panel.querySelector('#tss-known').textContent = Object.keys(state.items).length;
+        panel.querySelector('#tss-seen').textContent = seenThisSession.size;
+        panel.querySelector('#tss-new').textContent = unclassified.length;
+    }
+
+    function readVisibleItems() {
+        const buttons = document.querySelectorAll('#item-market-root button[aria-controls^="wai-inventoryManager-itemInfo-"]');
+        const items = [];
+
+        for (const button of buttons) {
+            const ariaLabel = button.getAttribute('aria-label') || '';
+            const quantityMatch = ariaLabel.match(/\(available:\s*([\d,]+)\s+items?\)/i);
+            if (!quantityMatch) continue;
+
+            const available = Number(quantityMatch[1].replace(/,/g, ''));
+            if (!Number.isFinite(available) || available < 1) continue;
+
+            const image = button.querySelector('img[src*="/images/items/"]');
+            const imageSrc = image?.getAttribute('src') || '';
+            const controls = button.getAttribute('aria-controls') || '';
+            const idMatch = imageSrc.match(/\/images\/items\/(\d+)\//i) || controls.match(/itemInfo-(\d+)-/i);
+            if (!idMatch) continue;
+
+            const row = button.closest('[class*="itemRow"]') || button.parentElement;
+            if (!row) continue;
+
+            items.push({
+                id: String(idMatch[1]),
+                name: image?.getAttribute('alt')?.trim() || `Item ${idMatch[1]}`,
+                available,
+                row,
+                infoButton: button
+            });
+        }
+
+        return items;
+    }
+
+    function setReactInputValue(input, value) {
+        if (!input) return;
+        const text = value === '' || value === null ? '' : String(value);
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        if (setter) setter.call(input, text);
+        else input.value = text;
+
+        const hidden = input.parentElement?.querySelector(`input[placeholder="${input.placeholder}"][type="hidden"]`);
+        if (hidden) hidden.value = text;
+
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dispatchEvent(new Event('blur', { bubbles: true }));
+    }
+
+    function findQuantityInput(row) {
+        return row.querySelector('input[placeholder="Qty"]:not([type="hidden"])');
+    }
+
+    function findPriceInput(row) {
+        return row.querySelector('input[placeholder="Price"]:not([type="hidden"])');
+    }
+
+    function getRRP(row) {
+        const element = row.querySelector('[aria-label*="Recommended Retail Price"]');
+        if (!element) return 0;
+        const text = element.getAttribute('aria-label') || element.textContent || '';
+        const match = text.match(/\$([\d,]+)/);
+        return match ? Number(match[1].replace(/,/g, '')) : 0;
+    }
+
+    function clearPrice(item) {
+        const input = findPriceInput(item.row);
+        if (input) setReactInputValue(input, '');
+    }
+
+    function applyPrice(item) {
+        const rrp = getRRP(item.row);
+        if (!rrp) return;
+        const percent = getPricePercent();
+        const price = Math.max(1, Math.round(rrp * (1 + percent / 100)));
+        const input = findPriceInput(item.row);
+        if (!input) return;
+        setReactInputValue(input, price);
+        input.title = `RRP $${rrp.toLocaleString('en-US')} | ${percent >= 0 ? '+' : ''}${percent}% = $${price.toLocaleString('en-US')}`;
+    }
+
+    function applyRule(item) {
+        const rule = state.items[item.id]?.rule;
+        if (!rule) return;
+        const qtyInput = findQuantityInput(item.row);
+        if (!qtyInput) return;
+
+        if (rule === 'SELL_ALL') {
+            setReactInputValue(qtyInput, item.available);
+            applyPrice(item);
+            return;
+        }
+
+        if (rule === 'KEEP_ONE') {
+            const qty = Math.max(0, item.available - 1);
+            setReactInputValue(qtyInput, qty > 0 ? qty : '');
+            if (qty > 0) applyPrice(item);
+            else clearPrice(item);
+            return;
+        }
+
+        setReactInputValue(qtyInput, '');
+        clearPrice(item);
+    }
+
+    function setItemRule(item, rule) {
+        if (!rule) {
+            delete state.items[item.id];
+        } else {
+            state.items[item.id] = {
+                name: item.name,
+                rule,
+                updatedAt: new Date().toISOString()
+            };
+        }
+        saveState();
+        scanAndPrepare();
+        setStatus(rule ? `${item.name}: ${RULES[rule].label}` : `${item.name}: Unclassified`, 'ok');
+    }
+
+    function decorateItemRow(item) {
+        let select = item.row.querySelector('.tss-item-select');
+        if (select && select.dataset.itemId !== item.id) {
+            select.remove();
+            select = null;
+        }
+
+        if (!select) {
+            select = document.createElement('select');
+            select.className = 'tss-item-select';
+            select.dataset.itemId = item.id;
+            for (const [value, label] of [
+                ['', 'Unclassified'],
+                ['SELL_ALL', 'Sell all'],
+                ['KEEP_ONE', 'Keep 1'],
+                ['NEVER_SELL', 'Never sell']
+            ]) {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                select.appendChild(option);
+            }
+            select.addEventListener('click', event => event.stopPropagation());
+            select.addEventListener('change', event => {
+                event.stopPropagation();
+                const current = readVisibleItems().find(entry => entry.row === item.row);
+                if (current) setItemRule(current, event.target.value);
+            });
+            item.infoButton.insertAdjacentElement('afterend', select);
+        }
+
+        const rule = state.items[item.id]?.rule || '';
+        select.value = rule;
+        item.row.classList.toggle('tss-unclassified-row', !rule);
+        select.style.setProperty('background', '#292929', 'important');
+        select.style.setProperty('color', '#f2f2f2', 'important');
+        select.style.setProperty('border-color', rule ? RULES[rule].color : '#c49000', 'important');
+        select.title = rule ? RULES[rule].label : 'Choose how this item should be handled';
+    }
+
+    function prioritizeUnclassifiedRows(items) {
+        const entries = [];
+
+        for (const item of items) {
+            const wrapper = item.row.closest('[data-index]');
+            if (!wrapper) continue;
+            const index = Number(wrapper.dataset.index);
+            if (!Number.isFinite(index)) continue;
+            wrapper.classList.add('tss-priority-wrapper');
+            if (!naturalSlotTransforms.has(index)) {
+                naturalSlotTransforms.set(index, wrapper.style.transform || `translateY(${index * 34}px)`);
+            }
+            entries.push({
+                wrapper,
+                index,
+                unclassified: !state.items[item.id]?.rule
+            });
+        }
+
+        if (entries.length < 2) return;
+
+        const slots = entries
+            .map(entry => ({ index: entry.index, transform: naturalSlotTransforms.get(entry.index) }))
+            .sort((a, b) => a.index - b.index);
+
+        const ordered = [...entries].sort((a, b) => {
+            if (a.unclassified !== b.unclassified) return a.unclassified ? -1 : 1;
+            return a.index - b.index;
+        });
+
+        ordered.forEach((entry, position) => {
+            const target = slots[position];
+            if (!target?.transform) return;
+            entry.wrapper.style.transform = target.transform;
+            entry.wrapper.style.zIndex = entry.unclassified ? '3' : '';
+        });
+    }
+
+    function scanAndPrepare(force = false) {
+        if (!active || !isAddListingPage()) return;
+        const items = readVisibleItems();
+
+        for (const item of items) {
+            seenThisSession.set(item.id, {
+                id: item.id,
+                name: item.name,
+                available: item.available
+            });
+            decorateItemRow(item);
+            if (force || getAutoPrepare()) applyRule(item);
+        }
+
+        prioritizeUnclassifiedRows(items);
+        refreshPanel();
+    }
+
+    function scheduleScan() {
+        if (!active || scanScheduled) return;
+        scanScheduled = true;
+        setTimeout(() => {
+            scanScheduled = false;
+            scanAndPrepare();
+        }, 100);
+    }
+
+    function startPageMode() {
+        if (active) return;
+        active = true;
+        seenThisSession.clear();
+        naturalSlotTransforms.clear();
+        createPanel();
+        observer = new MutationObserver(mutations => {
+            const relevant = mutations.some(mutation => !panel || !panel.contains(mutation.target));
+            if (relevant) scheduleScan();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        scanAndPrepare();
+    }
+
+    function stopPageMode() {
+        if (!active) return;
+        active = false;
+        observer?.disconnect();
+        observer = null;
+        seenThisSession.clear();
+        naturalSlotTransforms.clear();
+        removePanel();
+    }
+
+    function checkRoute() {
+        if (isAddListingPage()) startPageMode();
+        else stopPageMode();
+    }
+
+    function init() {
+        let lastUrl = location.href;
+        routeWatcher = setInterval(() => {
+            if (location.href !== lastUrl) {
+                lastUrl = location.href;
+                checkRoute();
+            }
+        }, 500);
+        window.addEventListener('hashchange', checkRoute);
+        window.addEventListener('popstate', checkRoute);
+        checkRoute();
+    }
+
+    init();
+})();
