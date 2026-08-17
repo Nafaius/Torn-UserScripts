@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Smart Seller
 // @namespace    Nuntius [4448332]
-// @version      2.0.2
+// @version      2.0.3
 // @description  Automatically prepares Item Market quantities and prices from RRP using local rules.
 // @author       Nael
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -48,8 +48,9 @@
     let routeWatcher = null;
     let active = false;
     let scanScheduled = false;
-    let prioritySuspended = false;
-    let priorityResumeTimer = null;
+    let initialPriorityApplied = false;
+    let initialPriorityTimer = null;
+    let initialPriorityAttempts = 0;
     const seenThisSession = new Map();
     const naturalSlotTransforms = new Map();
 
@@ -220,15 +221,22 @@
                 background: #242424 !important;
             }
             @keyframes tss-pulse {
-                0%, 100% { filter: brightness(1); background-color: rgba(255,193,7,0); }
-                50% { filter: brightness(1.18); background-color: rgba(255,193,7,.10); }
+                0%, 100% {
+                    box-shadow: 0 0 0 rgba(255,193,7,0);
+                    border-color: #c49000;
+                }
+                50% {
+                    box-shadow: 0 0 8px rgba(255,193,7,.85);
+                    border-color: #ffd54f;
+                }
             }
             .tss-unclassified-row {
                 outline: none !important;
                 box-shadow: none !important;
+            }
+            .tss-item-select.tss-unclassified-select {
                 animation: tss-pulse 1.35s ease-in-out infinite !important;
             }
-            .tss-priority-wrapper { transition: transform 260ms ease !important; }
         `;
         document.head.appendChild(style);
     }
@@ -548,26 +556,6 @@
     }
 
     function decorateItemRow(item) {
-        if (!item.infoButton.dataset.tssInfoSafe) {
-            item.infoButton.dataset.tssInfoSafe = '1';
-
-            const suspendBeforeOpen = () => {
-                suspendPriorityOrder();
-            };
-
-            item.infoButton.addEventListener(
-                'pointerdown',
-                suspendBeforeOpen,
-                true
-            );
-
-            item.infoButton.addEventListener(
-                'mousedown',
-                suspendBeforeOpen,
-                true
-            );
-        }
-
         let select = item.row.querySelector('.tss-item-select');
         if (select && select.dataset.itemId !== item.id) {
             select.remove();
@@ -601,101 +589,32 @@
         const rule = state.items[item.id]?.rule || '';
         select.value = rule;
         item.row.classList.toggle('tss-unclassified-row', !rule);
+        select.classList.toggle('tss-unclassified-select', !rule);
         select.style.setProperty('background', '#292929', 'important');
         select.style.setProperty('color', '#f2f2f2', 'important');
         select.style.setProperty('border-color', rule ? RULES[rule].color : '#c49000', 'important');
         select.title = rule ? RULES[rule].label : 'Choose how this item should be handled';
     }
 
-    function getInfoButtons() {
-        return document.querySelectorAll(
-            '#item-market-root button[aria-controls^="wai-inventoryManager-itemInfo-"]'
-        );
-    }
-
-    function isAnyItemInfoOpen() {
-        for (const button of getInfoButtons()) {
-            if (button.getAttribute('aria-expanded') === 'true') {
-                return true;
-            }
-
-            const controlledId = button.getAttribute('aria-controls');
-            if (!controlledId) continue;
-
-            const infoPanel = document.getElementById(controlledId);
-            if (
-                infoPanel &&
-                infoPanel.getClientRects().length > 0 &&
-                infoPanel.getBoundingClientRect().height > 0
-            ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function restoreNaturalRowOrder(items = readVisibleItems()) {
-        for (const item of items) {
-            const wrapper = item.row.closest('[data-index]');
-            if (!wrapper) continue;
-
-            const index = Number(wrapper.dataset.index);
-            if (!Number.isFinite(index)) continue;
-
-            const naturalTransform = naturalSlotTransforms.get(index);
-            if (naturalTransform) {
-                wrapper.style.transform = naturalTransform;
-            }
-
-            wrapper.style.zIndex = '';
-        }
-    }
-
-    function suspendPriorityOrder() {
-        prioritySuspended = true;
-
-        if (priorityResumeTimer) {
-            clearTimeout(priorityResumeTimer);
-            priorityResumeTimer = null;
-        }
-
-        restoreNaturalRowOrder();
-    }
-
-    function schedulePriorityResume() {
-        if (priorityResumeTimer) {
-            clearTimeout(priorityResumeTimer);
-        }
-
-        priorityResumeTimer = setTimeout(() => {
-            priorityResumeTimer = null;
-
-            if (!active || isAnyItemInfoOpen()) {
-                return;
-            }
-
-            prioritySuspended = false;
-            scanAndPrepare();
-        }, 250);
-    }
-
-    function prioritizeUnclassifiedRows(items) {
-        if (prioritySuspended || isAnyItemInfoOpen()) {
-            return;
-        }
+    function applyInitialPriorityOrder(items) {
+        if (initialPriorityApplied || items.length < 2) return false;
 
         const entries = [];
 
         for (const item of items) {
             const wrapper = item.row.closest('[data-index]');
             if (!wrapper) continue;
+
             const index = Number(wrapper.dataset.index);
             if (!Number.isFinite(index)) continue;
-            wrapper.classList.add('tss-priority-wrapper');
+
             if (!naturalSlotTransforms.has(index)) {
-                naturalSlotTransforms.set(index, wrapper.style.transform || `translateY(${index * 34}px)`);
+                naturalSlotTransforms.set(
+                    index,
+                    wrapper.style.transform || `translateY(${index * 34}px)`
+                );
             }
+
             entries.push({
                 wrapper,
                 index,
@@ -703,23 +622,60 @@
             });
         }
 
-        if (entries.length < 2) return;
+        if (entries.length < 2) return false;
 
         const slots = entries
-            .map(entry => ({ index: entry.index, transform: naturalSlotTransforms.get(entry.index) }))
+            .map(entry => ({
+                index: entry.index,
+                transform: naturalSlotTransforms.get(entry.index)
+            }))
             .sort((a, b) => a.index - b.index);
 
         const ordered = [...entries].sort((a, b) => {
-            if (a.unclassified !== b.unclassified) return a.unclassified ? -1 : 1;
+            if (a.unclassified !== b.unclassified) {
+                return a.unclassified ? -1 : 1;
+            }
             return a.index - b.index;
         });
 
         ordered.forEach((entry, position) => {
             const target = slots[position];
             if (!target?.transform) return;
+
+            // ONE-TIME write. Smart Seller never writes wrapper transforms again
+            // during this page visit. Torn is free to manage them afterward.
             entry.wrapper.style.transform = target.transform;
             entry.wrapper.style.zIndex = entry.unclassified ? '3' : '';
         });
+
+        initialPriorityApplied = true;
+        return true;
+    }
+
+    function scheduleInitialPriorityOrder() {
+        if (initialPriorityApplied || initialPriorityTimer) return;
+
+        initialPriorityTimer = setTimeout(() => {
+            initialPriorityTimer = null;
+
+            if (!active || !isAddListingPage() || initialPriorityApplied) {
+                return;
+            }
+
+            const items = readVisibleItems();
+
+            if (applyInitialPriorityOrder(items)) {
+                return;
+            }
+
+            // Torn may still be rendering the virtualized list. Retry a few
+            // times, but once an order is applied it is never applied again.
+            initialPriorityAttempts += 1;
+
+            if (initialPriorityAttempts < 6) {
+                scheduleInitialPriorityOrder();
+            }
+        }, 450);
     }
 
     function scanAndPrepare(force = false) {
@@ -736,15 +692,7 @@
             if (force || getAutoPrepare()) applyRule(item);
         }
 
-        if (isAnyItemInfoOpen()) {
-            prioritySuspended = true;
-            restoreNaturalRowOrder(items);
-        } else if (prioritySuspended) {
-            schedulePriorityResume();
-        } else {
-            prioritizeUnclassifiedRows(items);
-        }
-
+        scheduleInitialPriorityOrder();
         refreshPanel();
     }
 
@@ -760,11 +708,38 @@
     function startPageMode() {
         if (active) return;
         active = true;
+        initialPriorityApplied = false;
+        initialPriorityAttempts = 0;
+
+        if (initialPriorityTimer) {
+            clearTimeout(initialPriorityTimer);
+            initialPriorityTimer = null;
+        }
+
         seenThisSession.clear();
         naturalSlotTransforms.clear();
         createPanel();
         observer = new MutationObserver(mutations => {
-            const relevant = mutations.some(mutation => !panel || !panel.contains(mutation.target));
+            const relevant = mutations.some(mutation => {
+                const target = mutation.target;
+
+                if (panel && panel.contains(target)) {
+                    return false;
+                }
+
+                if (
+                    target instanceof Element &&
+                    (
+                        target.id?.startsWith('wai-inventoryManager-itemInfo-') ||
+                        target.closest?.('[id^="wai-inventoryManager-itemInfo-"]')
+                    )
+                ) {
+                    return false;
+                }
+
+                return true;
+            });
+
             if (relevant) scheduleScan();
         });
         observer.observe(document.body, { childList: true, subtree: true });
@@ -776,11 +751,13 @@
         active = false;
         observer?.disconnect();
         observer = null;
-        if (priorityResumeTimer) {
-            clearTimeout(priorityResumeTimer);
-            priorityResumeTimer = null;
+        if (initialPriorityTimer) {
+            clearTimeout(initialPriorityTimer);
+            initialPriorityTimer = null;
         }
-        prioritySuspended = false;
+
+        initialPriorityApplied = false;
+        initialPriorityAttempts = 0;
         seenThisSession.clear();
         naturalSlotTransforms.clear();
         removePanel();
